@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Servia</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; min-height:100vh; display:grid; place-items:center; padding:24px;
+         background:#14171c; color:#c6ccd6; font:15px/1.5 system-ui, sans-serif; }
+  .card { width:min(620px, 100%); background:#1b1f26; border:1px solid #262c37;
+          border-radius:14px; padding:28px; }
+  h1 { margin:0 0 4px; font-size:19px; color:#e6ebf2; }
+  .sub { color:#7b8493; font-size:13px; margin-bottom:24px; }
+  label { display:block; font-size:12px; letter-spacing:.06em; text-transform:uppercase;
+          color:#7b8493; margin:0 0 6px; }
+  select { width:100%; padding:10px 12px; margin-bottom:16px; border-radius:8px;
+           border:1px solid #2d3441; background:#12151a; color:#c6ccd6; font:15px system-ui; }
+  button { font:600 15px system-ui; padding:12px 22px; border-radius:8px;
+           border:0; cursor:pointer; background:#4a8fd8; color:#fff; }
+  button:disabled { opacity:.4; cursor:default; }
+  button.end { background:#d9636b; }
+  .row { display:flex; gap:10px; align-items:center; margin:18px 0; }
+  .dot { width:9px; height:9px; border-radius:50%; background:#4e5561; flex:none; }
+  .dot.on { background:#1c9c72; } .dot.bad { background:#d9636b; }
+  #status { font-size:13px; color:#7b8493; }
+  #context { margin-top:16px; padding:14px; border-radius:8px; background:#12151a;
+             border:1px solid #232933; font-size:13px; color:#8d96a5; white-space:pre-wrap; }
+  #log { margin-top:20px; border-top:1px solid #262c37; padding-top:16px;
+         max-height:320px; overflow:auto; }
+  .line { margin:0 0 12px; }
+  .who { font-size:11px; letter-spacing:.08em; text-transform:uppercase;
+         color:#7b8493; display:block; }
+  .you .who { color:#4a8fd8; }
+  .hint { margin-top:18px; font-size:12px; color:#5f6b7c; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Servia</h1>
+  <div class="sub">Sign in as a customer, then call. The agent is handed your context before it speaks.</div>
+
+  <label for="org">Organization</label>
+  <select id="org"></select>
+
+  <label for="user">Signed in as</label>
+  <select id="user"></select>
+
+  <label for="service">Calling about</label>
+  <select id="service"></select>
+
+  <div id="context">No context loaded.</div>
+
+  <div class="row">
+    <span class="dot" id="dot"></span>
+    <span id="status">idle</span>
+  </div>
+
+  <button id="call">Start call</button>
+  <button id="hang" class="end" hidden>End call</button>
+
+  <div id="log"></div>
+  <div class="hint">Use headphones, or it hears itself and loops.</div>
+</div>
+
+<script type="module">
+import { Room, RoomEvent, Track } from 'https://cdn.jsdelivr.net/npm/livekit-client/+esm';
+
+class Api {
+  async get(path) { return this.#json(await fetch(path)); }
+  async post(path, body) {
+    return this.#json(await fetch(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    }));
+  }
+  async #json(response) {
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(payload?.error?.message ?? `HTTP ${response.status}`);
+    return payload;
+  }
+}
+
+class Transcript {
+  constructor(element) { this.element = element; }
+  clear() { this.element.replaceChildren(); }
+  line(who, className) {
+    const node = document.createElement('p');
+    node.className = `line ${className ?? ''}`;
+    node.innerHTML = '<span class="who"></span><span class="txt"></span>';
+    node.querySelector('.who').textContent = who;
+    this.element.appendChild(node);
+    return node.querySelector('.txt');
+  }
+  append(target, text) {
+    target.textContent += text;
+    this.element.scrollTop = this.element.scrollHeight;
+  }
+}
+
+class CallConsole {
+  constructor() {
+    this.api = new Api();
+    this.transcript = new Transcript(document.getElementById('log'));
+    this.org = document.getElementById('org');
+    this.user = document.getElementById('user');
+    this.service = document.getElementById('service');
+    this.context = document.getElementById('context');
+    this.callButton = document.getElementById('call');
+    this.hangButton = document.getElementById('hang');
+    this.room = null;
+  }
+
+  async start() {
+    this.org.onchange = () => this.loadOrganization();
+    this.user.onchange = () => this.preview();
+    this.callButton.onclick = () => this.call();
+    this.hangButton.onclick = () => this.room?.disconnect();
+
+    const organizations = await this.api.get('/v1/organizations');
+    this.#fill(this.org, organizations, (o) => [o.id, o.name]);
+    await this.loadOrganization();
+  }
+
+  async loadOrganization() {
+    const id = this.org.value;
+    const [users, services] = await Promise.all([
+      this.api.get(`/v1/organizations/${id}/users`),
+      this.api.get(`/v1/organizations/${id}/services`),
+    ]);
+    this.#fill(this.user, users, (u) => [u.id, u.full_name]);
+    this.#fill(this.service, services, (s) => [s.id, s.name], 'Not sure yet');
+    await this.preview();
+  }
+
+  async preview() {
+    const tasks = await this.api.get(`/v1/users/${this.user.value}/tasks?open_only=true`);
+    this.context.textContent = tasks.length
+      ? tasks.map((t) => `${t.reference} — ${t.title} (${t.status.replace('_', ' ')})`).join('\n')
+      : 'Nothing open on this account.';
+  }
+
+  async call() {
+    this.callButton.disabled = true;
+    this.transcript.clear();
+    this.#status('starting call…');
+    try {
+      const credentials = await this.api.post('/v1/calls', {
+        user_id: this.user.value,
+        service_id: this.service.value || null,
+      });
+      await this.#connect(credentials);
+    } catch (error) {
+      console.error(error);
+      this.#status(`failed: ${error.message}`, 'bad');
+      this.callButton.disabled = false;
+    }
+  }
+
+  async #connect({ server_url, token }) {
+    this.room = new Room({ adaptiveStream: true });
+
+    this.room.on(RoomEvent.TrackSubscribed, (track) => {
+      if (track.kind !== Track.Kind.Audio) return;
+      const element = track.attach();
+      element.autoplay = true;
+      document.body.appendChild(element);
+    });
+
+    this.room.on(RoomEvent.ParticipantConnected, () => this.#status('agent joined', 'on'));
+    this.room.on(RoomEvent.Disconnected, () => {
+      this.#status('call ended');
+      this.callButton.disabled = false;
+      this.callButton.hidden = false;
+      this.hangButton.hidden = true;
+    });
+
+    this.room.registerTextStreamHandler('lk.transcription', async (reader, info) => {
+      const mine = info.identity === this.room.localParticipant.identity;
+      const target = this.transcript.line(mine ? 'you' : 'agent', mine ? 'you' : '');
+      for await (const chunk of reader) this.transcript.append(target, chunk);
+    });
+
+    this.#status('connecting…');
+    await this.room.connect(server_url, token);
+    await this.room.startAudio().catch(() => {});
+    await this.room.localParticipant.setMicrophoneEnabled(true);
+
+    this.#status('listening', 'on');
+    this.callButton.hidden = true;
+    this.hangButton.hidden = false;
+  }
+
+  #fill(select, items, map, placeholder) {
+    select.replaceChildren();
+    if (placeholder) select.add(new Option(placeholder, ''));
+    for (const item of items) {
+      const [value, label] = map(item);
+      select.add(new Option(label, value));
+    }
+  }
+
+  #status(text, state) {
+    document.getElementById('status').textContent = text;
+    document.getElementById('dot').className = `dot ${state ?? ''}`;
+  }
+}
+
+new CallConsole().start();
+</script>
+</body>
+</html>
+
+
+
+
+<!-- #handlers 
+RoomEvent.TrackSubscribed
+→ Handles incoming audio tracks from the agent.
+RoomEvent.ParticipantConnected
+→ Handles when a participant (agent) joins the room.
+RoomEvent.Disconnected
+→ Handles when the room/call disconnects.
+registerTextStreamHandler('lk.transcription', ...)
+→ Handles incoming live transcription text. -->

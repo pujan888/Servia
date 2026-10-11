@@ -1,0 +1,14 @@
+# secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# local leftovers
+.venv/

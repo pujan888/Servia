@@ -1,0 +1,62 @@
+# Local. `make up` builds and starts everything, `make down` stops it.
+
+services:
+  postgres:
+    build: ./docker/postgres
+    image: servia-postgres:16-pgvector
+    environment:
+      POSTGRES_USER: servia
+      POSTGRES_PASSWORD: servia
+      POSTGRES_DB: servia
+    ports: ["5433:5432"]
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U servia"]
+      interval: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --save "" --maxmemory 128mb --maxmemory-policy allkeys-lru
+    ports: ["6379:6379"]
+
+  api:
+    build: ./server
+    image: servia:local
+    env_file: ./server/.env
+    environment:
+      DATABASE__URL: postgresql+asyncpg://servia:servia@postgres:5432/servia
+      CACHE__URL: redis://redis:6379/0
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    ports: ["8000:8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 5s
+      retries: 20
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  agent:
+    build: ./server
+    image: servia:local
+    env_file: ./server/.env
+    environment:
+      DATABASE__URL: postgresql+asyncpg://servia:servia@postgres:5432/servia
+      CACHE__URL: redis://redis:6379/0
+    entrypoint: ["python", "-m", "app.voice.worker", "start"]
+    depends_on:
+      api: { condition: service_healthy }
+
+  jobs:
+    build: ./server
+    image: servia:local
+    env_file: ./server/.env
+    environment:
+      DATABASE__URL: postgresql+asyncpg://servia:servia@postgres:5432/servia
+      CACHE__URL: redis://redis:6379/0
+    entrypoint: ["python", "-m", "app.jobs_worker"]
+    depends_on:
+      api: { condition: service_healthy }
+
+volumes:
+  pgdata:

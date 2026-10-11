@@ -1,0 +1,19 @@
+name: lint
+
+on:
+  push:
+    branches: [main, develop]
+
+jobs:
+  ruff:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+      - run: uv sync --frozen --only-dev
+      - run: uv run --no-sync ruff check app

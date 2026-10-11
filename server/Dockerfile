@@ -15,6 +15,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 COPY alembic.ini ./
 COPY alembic ./alembic
 COPY app ./app
+COPY entrypoint.sh ./entrypoint.sh
+RUN chmod +x ./entrypoint.sh
 
 # Bake the turn-detector and VAD model files into the image. Settings are required at import
 # time, so placeholders stand in; the real values come from .env at runtime.
@@ -23,4 +25,6 @@ RUN DATABASE__URL=postgresql+asyncpg://build@localhost/build \
     python -m app.voice.worker download-files
 
 EXPOSE 8000
+# migrations run first, then the CMD below
+ENTRYPOINT ["./entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

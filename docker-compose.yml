@@ -22,6 +22,10 @@ services:
     env_file: ./server/.env
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2
     ports: ["8000:8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 5s
+      retries: 20
     restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }
@@ -30,17 +34,19 @@ services:
     build: ./server
     image: servia:latest
     env_file: ./server/.env
-    command: python -m app.voice.worker start
+    entrypoint: ["python", "-m", "app.voice.worker", "start"]
     restart: unless-stopped
-    depends_on: [api]
+    depends_on:
+      api: { condition: service_healthy }
 
   jobs:
     build: ./server
     image: servia:latest
     env_file: ./server/.env
-    command: python -m app.jobs_worker
+    entrypoint: ["python", "-m", "app.jobs_worker"]
     restart: unless-stopped
-    depends_on: [api]
+    depends_on:
+      api: { condition: service_healthy }
 
 volumes:
   pgdata:
